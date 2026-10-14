@@ -173,7 +173,7 @@ type ContextConfig struct {
 	AgentSkillsEnabled *bool `yaml:"agent_skills_enabled,omitempty" json:"agent_skills_enabled,omitempty"`
 	// SerenaEnabled records whether Serena (https://github.com/oraios/serena — an LSP-backed
 	// semantic code-navigation/editing MCP server) is installed into the project's Python
-	// environment (<project>/.venv-msb) and registered with each installed agent CLI (chosen
+	// environment (<project>/.venv) and registered with each installed agent CLI (chosen
 	// at `ai create`). A pointer so three states are distinct: unset (nil), explicit true,
 	// explicit false. It is OPT-IN — unset (nil) defaults to DISABLED — see SerenaEnabledOrDefault.
 	SerenaEnabled *bool `yaml:"serena_enabled,omitempty" json:"serena_enabled,omitempty"`

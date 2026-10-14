@@ -303,7 +303,7 @@ type MCPServer struct {
 
 // GraphifyMCPArgs is the argv (after the venv python) that runs graphify's stdio MCP
 // server against the project's built graph. graphifyy[mcp] is installed INTO the project
-// venv (.venv-msb) so a plain `python -m graphify.serve` works — the uv-tool install is
+// venv (.venv) so a plain `python -m graphify.serve` works — the uv-tool install is
 // isolated and not importable this way. The graph is built lazily (git hook / `graphify
 // update`); until it exists the server yields no tools.
 var GraphifyMCPArgs = []string{"-m", "graphify.serve", "graphify-out/graph.json"}
@@ -325,7 +325,7 @@ func SerenaMCPArgs(context string) []string {
 // codeReviewGraph/codebaseMemory/tokensave run their own installed binaries; agentMemory
 // runs via npx (the agentmemory npm package is globally installed, but its MCP entrypoint
 // is published as the separate @agentmemory/mcp package, fetched on demand); graphify runs
-// from the project venv (venvPython = <project>/.venv-msb/bin/python) where graphifyy[mcp]
+// from the project venv (venvPython = <project>/.venv/bin/python) where graphifyy[mcp]
 // lives. A blank venvPython omits graphify (venv path unknown).
 func EnabledMCPServers(codeReviewGraph, codebaseMemory, graphify, tokensave, agentMemory, serena bool, venvPython string) []MCPServer {
 	var servers []MCPServer

@@ -37,7 +37,7 @@ func (manager Manager) writeAgentConfig(root, cli string, projectConfig *config.
 // opencode/gemini get instead, via internal/workspace/tools.go) would be
 // clobbered on the next launch. See agentcfg.MCPServer's doc comment.
 func enabledMCPServers(root string, projectConfig *config.Config) []agentcfg.MCPServer {
-	venvPython := filepath.Join(root, ".venv-msb", "bin", "python")
+	venvPython := filepath.Join(root, ".venv", "bin", "python")
 	return agentcfg.EnabledMCPServers(
 		projectConfig.Context.CodeReviewGraphEnabledOrDefault(),
 		projectConfig.Context.CodebaseMemoryEnabledOrDefault(),

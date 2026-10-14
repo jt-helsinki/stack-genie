@@ -90,9 +90,13 @@ type FilesystemCapabilities struct {
 // plan's "Credential wiring" section) so the real LiteLLM scoped key never
 // touches the agent process's environment or disk.
 type NetworkCapabilities struct {
-	Block             bool                        `json:"block"`
-	AllowDomain       []string                    `json:"allow_domain,omitempty"`
-	DenyDomain        []string                    `json:"deny_domain,omitempty"`
+	Block       bool     `json:"block"`
+	AllowDomain []string `json:"allow_domain,omitempty"`
+	DenyDomain  []string `json:"deny_domain,omitempty"`
+	// OpenPort allows bidirectional localhost TCP on these ports. Needed for a loopback
+	// gateway: in nono's proxy network mode a direct connect to 127.0.0.1 is blocked, and
+	// allow_domain only governs traffic that goes THROUGH the proxy.
+	OpenPort          []int                       `json:"open_port,omitempty"`
 	NetworkProfile    string                      `json:"network_profile,omitempty"`
 	CustomCredentials map[string]CustomCredential `json:"custom_credentials,omitempty"`
 }

@@ -173,7 +173,7 @@ func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 	}
 	// The per-CLI agent config dirs + venv the platform writes into the project folder
 	// at workspace start (here only some exist — a missing one must be ignored).
-	for _, dir := range []string{".opencode", ".claude", ".omp", ".venv-msb"} {
+	for _, dir := range []string{".opencode", ".claude", ".omp"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			test.Fatal(err)
 		}
@@ -186,7 +186,7 @@ func TestDeleteRemovesPlatformDirKeepsOtherFiles(test *testing.T) {
 		test.Errorf(".ai-platform should be removed on a plain delete, got %v", err)
 	}
 	// Every per-CLI agent dir + venv is removed too (existing or not).
-	for _, dir := range []string{".opencode", ".claude", ".codex", ".omp", ".gemini", ".venv-msb"} {
+	for _, dir := range []string{".opencode", ".claude", ".codex", ".omp", ".gemini"} {
 		if _, err := os.Stat(filepath.Join(root, dir)); !os.IsNotExist(err) {
 			test.Errorf("%s should be removed on a plain delete, got %v", dir, err)
 		}
@@ -333,4 +333,34 @@ func slicesContain(list []string, value string) bool {
 		}
 	}
 	return false
+}
+
+// Scaffold writes a .env that activates the project's .venv, and never overwrites an existing one.
+func TestScaffoldWritesVenvEnvFileWithoutClobbering(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	root := filepath.Join(test.TempDir(), "app")
+	if _, err := Scaffold(Spec{Name: "app", Root: root, AgentCLIs: []string{"opencode"}}, "2026-07-05T00:00:00Z"); err != nil {
+		test.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, ".env"))
+	if err != nil {
+		test.Fatal(err)
+	}
+	if want := "source " + root + "/.venv/bin/activate\n"; string(got) != want {
+		test.Fatalf(".env = %q, want %q", got, want)
+	}
+
+	userRoot := filepath.Join(test.TempDir(), "mine")
+	if err := os.MkdirAll(userRoot, 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userRoot, ".env"), []byte("KEEP=1\n"), 0o644); err != nil {
+		test.Fatal(err)
+	}
+	if _, err := Scaffold(Spec{Name: "mine", Root: userRoot, AgentCLIs: []string{"opencode"}}, "2026-07-05T00:00:00Z"); err != nil {
+		test.Fatal(err)
+	}
+	if kept, _ := os.ReadFile(filepath.Join(userRoot, ".env")); string(kept) != "KEEP=1\n" {
+		test.Fatalf("an existing .env was overwritten: %q", kept)
+	}
 }

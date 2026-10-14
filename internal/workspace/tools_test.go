@@ -167,12 +167,12 @@ func serenaScript(test *testing.T, tools ...string) (root, script string) {
 	return root, script
 }
 
-// Serena installs into the PROJECT environment (.venv-msb), creating it first, then registers
+// Serena installs into the PROJECT environment (.venv), creating it first, then registers
 // with claude-code at LOCAL scope (never the checked-in .mcp.json) and with gemini at project scope.
 func TestRegisterSerenaInstallsIntoProjectVenvAndRegisters(test *testing.T) {
 	requireBash(test)
 	root, script := serenaScript(test, "claude-code", "gemini", "codex")
-	venv := filepath.Join(root, ".venv-msb")
+	venv := filepath.Join(root, ".venv")
 	for _, want := range []string{
 		"uv venv '" + venv + "'",
 		"uv pip install --python '" + venv + "/bin/python' --quiet serena-agent",

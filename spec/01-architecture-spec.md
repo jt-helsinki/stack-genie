@@ -1094,7 +1094,7 @@ described as working. The nine tools, with their intended purpose
 * **agent-skills** (default OFF) — curated senior-engineer skills (spec,
   TDD, review, security, shipping, …) from github.com/addyosmani/agent-skills.
 * **serena** (default OFF) — LSP-backed semantic code navigation/editing MCP
-server, installed into the project Python environment (`.venv-msb`).
+server, installed into the project Python environment (`.venv`).
 
 (`create.DefaultAITools()` returns caveman + graphify + code-review-graph ON,
 the other seven OFF — `create.SplitAITools` maps the multi-select onto the ten

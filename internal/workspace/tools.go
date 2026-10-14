@@ -370,7 +370,7 @@ func (manager Manager) stripGraphifyAgentsSection(root string) {
 // package must be importable from that venv. `graphify update .` is AST-only
 // (no API cost); Graphify's own git hook keeps the graph fresh after.
 func (manager Manager) setupGraphifyMCP(root string) {
-	venvPython := filepath.Join(root, ".venv-msb", "bin", "python")
+	venvPython := filepath.Join(root, ".venv", "bin", "python")
 	script := "export PATH=\"$HOME/.local/bin:$PATH\"\n" +
 		"[ -x " + shQuote(venvPython) + " ] || exit 0\n" +
 		"uv pip install --python " + shQuote(venvPython) + " --quiet \"graphifyy[mcp]\"\n" +
@@ -854,13 +854,13 @@ func (manager Manager) teardownAgentMemory(root string, projectConfig *config.Co
 // --- serena ------------------------------------------------------------------
 
 // serenaVenvPython is the project Python environment Serena installs into — the same
-// <project>/.venv-msb that Graphify's MCP server and agentconfig.enabledMCPServers use.
+// <project>/.venv that Graphify's MCP server and agentconfig.enabledMCPServers use.
 func serenaVenvPython(root string) string {
-	return filepath.Join(root, ".venv-msb", "bin", "python")
+	return filepath.Join(root, ".venv", "bin", "python")
 }
 
 // registerSerena installs Serena (https://github.com/oraios/serena, PyPI `serena-agent`)
-// into the PROJECT's Python environment, creating <project>/.venv-msb with uv first when
+// into the PROJECT's Python environment, creating <project>/.venv with uv first when
 // nothing has (no other step creates it since the microVM went away), then registers it with
 // claude-code (`claude mcp add`, local scope — private to this machine, never the checked-in
 // .mcp.json) and gemini (`gemini mcp add`, project scope) when selected. codex/hermes/omp get
@@ -890,7 +890,7 @@ func (manager Manager) registerSerena(root string, projectConfig *config.Config)
 		"export PATH=\"$HOME/.local/bin:$PATH\"\n" +
 		"[ -f " + shQuote(installMarker) + " ] && exit 0\n" +
 		"command -v uv >/dev/null 2>&1 || exit 0\n" +
-		"[ -x " + shQuote(venvPython) + " ] || uv venv " + shQuote(filepath.Join(root, ".venv-msb")) + " || exit 0\n" +
+		"[ -x " + shQuote(venvPython) + " ] || uv venv " + shQuote(filepath.Join(root, ".venv")) + " || exit 0\n" +
 		"uv pip install --python " + shQuote(venvPython) + " --quiet serena-agent || exit 0\n"
 	for _, registration := range registrations {
 		script += "{ " + registration + "; } || exit 0\n"
@@ -902,7 +902,7 @@ func (manager Manager) registerSerena(root string, projectConfig *config.Config)
 }
 
 // teardownSerena best-effort removes the claude-code/gemini registrations when the tool is
-// disabled and clears the install marker. The serena-agent package stays in .venv-msb
+// disabled and clears the install marker. The serena-agent package stays in .venv
 // (harmless; removed with the project's artifacts on `ai delete`). Not gated on the marker
 // (see teardownCaveman).
 func (manager Manager) teardownSerena(root string, projectConfig *config.Config) {

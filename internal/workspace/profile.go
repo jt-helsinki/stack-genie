@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,7 @@ func ensureProfile(root, cli string, projectConfig *config.Config, gatewayURL st
 			Block:       projectConfig.Network.ResolvedEgress() == "deny",
 			AllowDomain: allowDomain,
 			DenyDomain:  projectConfig.Network.DenyDomain,
+			OpenPort:    loopbackGatewayPorts(gatewayURL),
 		},
 	}
 	if cli == "gemini" {
@@ -98,6 +100,29 @@ func gatewayHostFromURL(gatewayURL string) string {
 		return ""
 	}
 	return parsed.Hostname()
+}
+
+// loopbackGatewayPorts returns the gateway's port when it is served on this machine's
+// loopback (the standalone default): the sandbox can only reach it through an explicit
+// open port, not through allow_domain.
+func loopbackGatewayPorts(gatewayURL string) []int {
+	if gatewayURL == "" {
+		return nil
+	}
+	parsed, err := url.Parse(gatewayURL)
+	if err != nil {
+		return nil
+	}
+	switch parsed.Hostname() {
+	case "127.0.0.1", "localhost", "::1":
+	default:
+		return nil
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil {
+		return nil
+	}
+	return []int{port}
 }
 
 func containsString(items []string, want string) bool {

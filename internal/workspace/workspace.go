@@ -147,6 +147,16 @@ func resolveGateway() (host string, port int, url string) {
 	return runtime.ResolveGateway(info.HostAddress())
 }
 
+// loadProjectConfig loads the project's config and refuses a directory with no
+// .ai-platform/config.yaml: config.Load would silently fall back to defaults (graphify and
+// caveman ON), and a launch would then install tools nobody selected.
+func loadProjectConfig(root string) (*config.Config, error) {
+	if _, err := os.Stat(config.ProjectPath(root)); err != nil {
+		return nil, fmt.Errorf("%s has no workspace config (%s) — run `ai create` there: %w", root, config.ProjectPath(root), err)
+	}
+	return config.Load(root)
+}
+
 // resolveProjectRoot resolves a project name to its registered root directory.
 func resolveProjectRoot(project string) (string, error) {
 	index, err := state.LoadIndex()
@@ -218,7 +228,7 @@ func (manager Manager) Agent(project, cli string) (*state.Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	projectConfig, err := config.Load(root)
+	projectConfig, err := loadProjectConfig(root)
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +326,7 @@ func (manager Manager) Shell(project string) error {
 	if err != nil {
 		return err
 	}
-	projectConfig, err := config.Load(root)
+	projectConfig, err := loadProjectConfig(root)
 	if err != nil {
 		return err
 	}
@@ -414,7 +424,7 @@ func (manager Manager) DeleteCredentials(project string) error {
 // launch runs the same steps again (each is marker-guarded, so that is cheap) to pick up
 // `ai tools enable|disable` changes.
 func PrepareProject(root string, report func(string)) error {
-	projectConfig, err := config.Load(root)
+	projectConfig, err := loadProjectConfig(root)
 	if err != nil {
 		return err
 	}

@@ -210,7 +210,7 @@ time:
   skills (spec, TDD, review, security, shipping, …).
 - **serena** (PyPI `serena-agent`, `oraios/serena`) — LSP-backed semantic code
 navigation and editing (symbols, references, refactors). Installed into the
-**project** Python environment `<project>/.venv-msb` (created with `uv venv` when
+**project** Python environment `<project>/.venv` (created with `uv venv` when
 absent), then registered with claude-code (`claude mcp add --scope local`) and
 gemini (`gemini mcp add --scope project`); codex/hermes/omp get it via MCP
 injection; opencode gets neither (same gap as agentmemory).

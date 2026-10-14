@@ -438,12 +438,11 @@ the agent into this source tree — the platform does not manage them.
 # (gemini is ENV-only — no on-disk provider file)
 ```
 
-`project.DockerfileTools` and `agentArtifactDirs` in `internal/project/project.go`
-still enumerate `.opencode`, `.claude`, `.codex`, `.omp`, `.gemini`, `.hermes`, and
-`.venv-msb` as the per-CLI dirs `ai delete` best-effort removes — `.venv-msb` is a
-holdover from the Microsandbox era (a per-project Python venv created at workspace
-start); no current code path creates one, but the delete cleanup still looks for it
-in case an older project has one.
+`agentArtifactDirs` in `internal/project/project.go` enumerates `.opencode`, `.claude`,
+`.codex`, `.omp`, `.gemini` and `.hermes` as the per-CLI dirs `ai delete` best-effort
+removes. The project's Python venv `.venv` (created by the Python-based AI tools, e.g.
+Serena) is deliberately NOT removed: it is an ordinary project venv. `ai create` also
+writes a one-line `.env` (`source <project>/.venv/bin/activate`) unless one exists.
 
 `<project>/.ai-platform/nono-profile-<cli>.json` is the project's generated **nono
 profile** (`internal/nono.Profile`, JSON — nono requires JSON, not YAML; `cli` is the

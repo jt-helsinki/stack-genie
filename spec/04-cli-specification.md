@@ -826,7 +826,7 @@ symlinked content is materialized first). Behavior of delete:
 * **keeps the user's OTHER files** in the directory; `--purge` additionally
   removes the WHOLE project directory
 * the **per-CLI agent config folders** (`.opencode`/`.claude`/`.codex`/`.omp`/
-  `.gemini`/`.hermes`) and the `.venv-msb` virtualenv — which the platform
+  `.gemini`/`.hermes`) — which the platform
   writes into the project dir (outside `.ai-platform`) at session launch — are
   removed too on a plain delete UNLESS kept with **`--keep-agent-config`** (or
   by answering the interactive prompt). When they are KEPT, their symlinks into

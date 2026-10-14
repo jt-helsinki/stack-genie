@@ -138,6 +138,26 @@ func TestEnsureProfileDenyModeStillAllowsGateway(test *testing.T) {
 	}
 }
 
+// A loopback gateway is only reachable from the sandbox through an explicit open port; a
+// remote gateway is reached through the proxy's domain allow-list and needs none.
+func TestEnsureProfileOpensLoopbackGatewayPort(test *testing.T) {
+	root := test.TempDir()
+	path, err := ensureProfile(root, "opencode", &config.Config{}, "http://127.0.0.1:18787/v1")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got := readProfile(test, path).Network.OpenPort; len(got) != 1 || got[0] != 18787 {
+		test.Fatalf("OpenPort = %v, want [18787]", got)
+	}
+	remote, err := ensureProfile(root, "opencode", &config.Config{}, "http://gateway.example:18787/v1")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got := readProfile(test, remote).Network.OpenPort; len(got) != 0 {
+		test.Fatalf("remote gateway OpenPort = %v, want none", got)
+	}
+}
+
 // TestEnsureProfileGeminiSetsBaseURLEnvVar verifies gemini — which has no
 // config-file base-URL setting — gets the gateway ROOT (no /v1 suffix) as a
 // non-secret profile environment variable; every other CLI gets no such var.

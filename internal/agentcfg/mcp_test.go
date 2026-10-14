@@ -9,7 +9,7 @@ import (
 )
 
 func TestEnabledMCPServers(test *testing.T) {
-	servers := EnabledMCPServers(true, true, true, true, true, true, "/home/workspace/project/.venv-msb/bin/python")
+	servers := EnabledMCPServers(true, true, true, true, true, true, "/home/workspace/project/.venv/bin/python")
 	if len(servers) != 6 {
 		test.Fatalf("want 6 servers, got %d: %+v", len(servers), servers)
 	}
@@ -24,7 +24,7 @@ func TestEnabledMCPServers(test *testing.T) {
 		test.Errorf("codebase-memory server = %+v", got)
 	}
 	graphify := byName["graphify"]
-	if graphify.Command != "/home/workspace/project/.venv-msb/bin/python" ||
+	if graphify.Command != "/home/workspace/project/.venv/bin/python" ||
 		strings.Join(graphify.Args, " ") != "-m graphify.serve graphify-out/graph.json" {
 		test.Errorf("graphify server = %+v", graphify)
 	}
@@ -35,7 +35,7 @@ func TestEnabledMCPServers(test *testing.T) {
 		test.Errorf("agentmemory server = %+v", got)
 	}
 	// serena runs from the project venv, beside its python, scoped to whatever cwd the agent has.
-	if got := byName["serena"]; got.Command != "/home/workspace/project/.venv-msb/bin/serena" ||
+	if got := byName["serena"]; got.Command != "/home/workspace/project/.venv/bin/serena" ||
 		strings.Join(got.Args, " ") != "start-mcp-server --project-from-cwd --context ide-assistant --open-web-dashboard False" {
 		test.Errorf("serena server = %+v", got)
 	}

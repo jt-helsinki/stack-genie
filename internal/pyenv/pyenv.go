@@ -1,7 +1,7 @@
 // Package pyenv manages the platform-managed, HOST-SIDE Python virtual environment
 // at ~/.ai-platform/venv (paths.VenvDir). It is the single home for platform-wide
 // Python tooling that runs on the host — most importantly the omlx local-inference
-// backend — as opposed to a workspace's in-VM `.venv-msb`.
+// backend — as opposed to a workspace's in-VM `.venv`.
 //
 // The venv is created at `ai setup` (best-effort, never fatal) via `uv venv` when uv
 // is on PATH (uv can fetch a suitable CPython), else `python3 -m venv`. Ensure creates

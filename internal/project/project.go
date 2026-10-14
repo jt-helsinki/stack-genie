@@ -97,7 +97,7 @@ type Spec struct {
 	// (OPT-IN, default false).
 	AgentSkillsEnabled bool
 	// SerenaEnabled records whether Serena is installed into the project's Python
-	// environment (.venv-msb) at start and registered with each installed agent CLI,
+	// environment (.venv) at start and registered with each installed agent CLI,
 	// written to config.yaml context.serena_enabled. Chosen at `ai create` (OPT-IN,
 	// default false).
 	SerenaEnabled bool
@@ -235,6 +235,9 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 		return "", err
 	}
 	if err := os.MkdirAll(filepath.Join(root, ".ai-platform"), 0o755); err != nil {
+		return "", err
+	}
+	if err := writeVenvEnvFile(root); err != nil {
 		return "", err
 	}
 	index, err := state.LoadIndex()
@@ -417,10 +420,11 @@ func workspaceHandle(name, root string, sessions []nono.Session) (id, status, cr
 	return latest.SessionID, latest.Status, latest.Started, latest.Started
 }
 
-// agentArtifactDirs are the per-CLI agent config dirs and the Python venv the platform
-// writes into the PROJECT folder (outside .ai-platform) at workspace start. A plain
-// `ai delete` removes them too, best-effort — a missing one is ignored.
-var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".omp", ".gemini", ".hermes", ".venv-msb"}
+// agentArtifactDirs are the per-CLI agent config dirs the platform writes into the PROJECT
+// folder (outside .ai-platform) at workspace start. A plain `ai delete` removes them too,
+// best-effort — a missing one is ignored. The project's Python venv (.venv) is deliberately
+// NOT listed: it is an ordinary project venv the user may have filled with their own packages.
+var agentArtifactDirs = []string{".opencode", ".claude", ".codex", ".omp", ".gemini", ".hermes"}
 
 // Delete removes a project from the index and removes its persistent overlay. A plain
 // delete removes the whole .ai-platform tree (config + run state) and — when
@@ -563,4 +567,15 @@ func copyTree(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, info.Mode().Perm())
+}
+
+// writeVenvEnvFile gives the project an env file that activates its Python environment
+// (<project>/.venv, which the Python-based AI tools install into). An existing .env is the
+// user's own and is never touched.
+func writeVenvEnvFile(root string) error {
+	path := filepath.Join(root, ".env")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	return os.WriteFile(path, []byte("source "+filepath.Join(root, ".venv", "bin", "activate")+"\n"), 0o644)
 }
