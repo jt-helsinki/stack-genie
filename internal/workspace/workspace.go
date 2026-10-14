@@ -31,6 +31,9 @@ var (
 	ErrUnknownProject  = errors.New("unknown workspace")
 	ErrUnknownAgentCLI = errors.New("unknown agent CLI")
 	ErrNoActiveSession = errors.New("no active session for this workspace")
+	// ErrSessionAttached: nono refuses a second client on a session ("already has an active
+	// attached client") and exits 0 at once, which looks like nothing happened.
+	ErrSessionAttached = errors.New("that session is already attached in another terminal — detach there (Ctrl-] then d) or stop it, then attach again")
 	ErrNonoMissing     = errors.New("nono is not installed")
 )
 
@@ -352,6 +355,13 @@ func (manager Manager) Shell(project string) error {
 func (manager Manager) Attach(sessionID string) error {
 	if sessionID == "" {
 		return ErrNoActiveSession
+	}
+	if sessions, err := manager.Runner.ListSessions(context.Background(), false); err == nil {
+		for _, session := range sessions {
+			if session.Attachment == "attached" && (session.Name == sessionID || strings.HasPrefix(session.SessionID, sessionID)) {
+				return ErrSessionAttached
+			}
+		}
 	}
 	return manager.Runner.Attach(context.Background(), sessionID)
 }

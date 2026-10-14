@@ -1615,6 +1615,10 @@ func TestEnsureHeadroomIsInternalOnly(test *testing.T) {
 	if !strings.Contains(launch, "HEADROOM_HOST=0.0.0.0") || !strings.Contains(launch, "HEADROOM_ALLOW_UNAUTHENTICATED_BIND=1") {
 		test.Errorf("headroom must listen on all interfaces and acknowledge the open bind: %s", launch)
 	}
+	// Without this /v1/compress answers 404 to LiteLLM's guardrail.
+	if !strings.Contains(launch, "HEADROOM_COMPRESS_ALLOW_REMOTE=1") {
+		test.Errorf("headroom must allow remote callers on /v1/compress: %s", launch)
+	}
 }
 
 // --- TASK B: live service log capture --------------------------------------

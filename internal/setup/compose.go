@@ -192,7 +192,7 @@ func ServicesComposeYAML(bindHost string) ([]byte, error) {
 				// pre_call guardrail (NOT a proxy in front of LiteLLM) — no
 				// OPENAI_TARGET_API_URL (that would loop) and no dependency on LiteLLM.
 				Image: containerImage("headroom"), ContainerName: headroomContainer, Networks: []string{net}, Restart: "unless-stopped",
-				Environment: []string{"HEADROOM_TELEMETRY=off", headroomListenEnv, headroomAllowOpenBindEnv},
+				Environment: []string{"HEADROOM_TELEMETRY=off", headroomListenEnv, headroomAllowOpenBindEnv, headroomCompressRemoteEnv},
 			},
 			proxyContainer: {
 				// The proxy (Caddy) is the sole host entry; it forwards the model path

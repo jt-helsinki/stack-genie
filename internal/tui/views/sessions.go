@@ -199,6 +199,12 @@ func (view *Sessions) handleAction(key tea.KeyMsg) (tea.Cmd, bool) {
 		if session == "" {
 			return nil, true
 		}
+		// nono refuses a second client and exits at once, so the suspended terminal would
+		// flash and return with no sign of why — say it here instead.
+		if row := view.table.SelectedRow(); len(row) > 3 && row[3] == "yes" {
+			view.flash = ui.Warn.Render(ui.IconDot + " already attached in another terminal — detach there (Ctrl-] then d) or stop it with d")
+			return nil, true
+		}
 		return func() tea.Msg { return AttachRequestedMsg{Project: project, Session: session} }, true
 	case "n":
 		// nono shell sessions are anonymous (not named) — this always creates a

@@ -684,6 +684,10 @@ func ensureRedisInsight(prober runtime.Prober, containerRuntime string) error {
 const (
 	headroomListenEnv        = "HEADROOM_HOST=0.0.0.0"
 	headroomAllowOpenBindEnv = "HEADROOM_ALLOW_UNAUTHENTICATED_BIND=1"
+	// headroomCompressRemoteEnv lets non-loopback callers use POST /v1/compress. Without it
+	// Headroom answers 404 to LiteLLM's guardrail ("Headroom compression service returned an
+	// error", HTTP 404). Only that route opens up; the container stays internal-only.
+	headroomCompressRemoteEnv = "HEADROOM_COMPRESS_ALLOW_REMOTE=1"
 )
 
 // containerHasEnv reports whether the container was created with the exact env entry.
@@ -710,7 +714,7 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	// proxy can't bind); a stale image likewise forces a recreate.
 	if containerOnCurrentImage(prober, containerRuntime, headroomContainer, containerImage("headroom")) &&
 		!containerPublishesHostPort(prober, containerRuntime, headroomContainer) &&
-		containerHasEnv(prober, containerRuntime, headroomContainer, headroomAllowOpenBindEnv) {
+		containerHasEnv(prober, containerRuntime, headroomContainer, headroomCompressRemoteEnv) {
 		return nil
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", headroomContainer)
@@ -723,6 +727,7 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 		// unreachable from LiteLLM's container ("Headroom compression service unreachable").
 		"-e", headroomListenEnv,
 		"-e", headroomAllowOpenBindEnv,
+		"-e", headroomCompressRemoteEnv,
 		containerImage("headroom"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {

@@ -103,6 +103,25 @@ func TestSessionsAttachKeysEmitAttachRequest(test *testing.T) {
 	}
 }
 
+// nono refuses a second client and exits at once; the view must say so instead of suspending
+// the terminal for nothing.
+func TestSessionsAttachRefusesAlreadyAttachedSession(test *testing.T) {
+	view := NewSessions(
+		func() ([]workspace.Session, error) {
+			return []workspace.Session{{SessionID: "abc12345xyz", Name: "opencode", Status: "running", Attachment: "attached"}}, nil
+		},
+		noKill,
+		func() string { return "app" },
+	)
+	_ = view.Update(view.Init()())
+	if cmd := view.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+		test.Fatal("an already-attached session must not emit an attach request")
+	}
+	if !strings.Contains(view.View(), "already attached") {
+		test.Fatalf("expected an already-attached notice, got:\n%s", view.View())
+	}
+}
+
 // `n` emits an ExecRequestedMsg (`ai shell <name>`) directly — nono shell sessions
 // are anonymous, so there is no name prompt to create one.
 func TestSessionsNewKeyRequestsShell(test *testing.T) {

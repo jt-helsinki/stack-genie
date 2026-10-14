@@ -306,6 +306,18 @@ func TestAttachRejectsEmptySessionID(test *testing.T) {
 	}
 }
 
+// nono refuses a second client (and exits 0), so Attach reports it rather than doing nothing.
+func TestAttachRefusesSessionWithAClientAttached(test *testing.T) {
+	runner := &nono.FakeRunner{Sessions: []nono.Session{{SessionID: "abc12345xyz", Name: "opencode", Attachment: "attached"}}}
+	manager := testManager(runner, &fakeKeyMinter{}, newFakeCredentialStore())
+	if err := manager.Attach("abc12345"); !errors.Is(err, ErrSessionAttached) {
+		test.Fatalf("Attach = %v, want ErrSessionAttached", err)
+	}
+	if len(runner.AttachCalls) != 0 {
+		test.Fatalf("nono attach must not run: %v", runner.AttachCalls)
+	}
+}
+
 // TestListSessionsFiltersByWorkdir verifies ListSessions returns only the sessions
 // whose Workdir matches the project's root (nono's own `ps` is global across every
 // project on the host).

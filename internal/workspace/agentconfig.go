@@ -55,7 +55,11 @@ func (manager Manager) pickerModels() []agentcfg.Model {
 	}
 	served, err := manager.Served.ServedModels()
 	if err != nil {
+		manager.progress("warning: could not read the served model list from the gateway (" + err.Error() + ") — opencode will list no models until the next launch")
 		return nil
+	}
+	if len(served) == 0 {
+		manager.progress("warning: the gateway serves no models yet — run `ai models refresh`; opencode lists none until the next launch")
 	}
 	seen := make(map[string]struct{}, len(served))
 	models := make([]agentcfg.Model, 0, len(served))
