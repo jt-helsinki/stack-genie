@@ -23,3 +23,7 @@ graphify-out/
 /temp
 
 ai-install.sh
+
+# Claude Code local state
+.claude/settings.local.json
+.claude/.headroom_wrap_*
