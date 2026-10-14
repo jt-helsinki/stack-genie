@@ -239,12 +239,11 @@ func (manager Manager) Agent(project, cli string) (*state.Workspace, error) {
 		return nil, err
 	}
 
+	// No `headroom wrap` here: it edits the user's global agent/serena/headroom config under HOME,
+	// which the nono sandbox denies, so a wrapped session crashed on start (PermissionError on
+	// ~/.serena/serena_config.yml) and exited before the user could read why. Gateway-routed agents
+	// already get compression from LiteLLM's headroom guardrail.
 	launch := []string{spec.binary}
-	if wrapped, ok := agentcfg.HeadroomWrapName(cli); ok {
-		if _, err := exec.LookPath("headroom"); err == nil {
-			launch = []string{"headroom", "wrap", wrapped}
-		}
-	}
 
 	sessionID, err := manager.Runner.RunDetached(context.Background(), nono.RunOptions{
 		Profile:          profilePath,

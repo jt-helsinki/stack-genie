@@ -408,7 +408,7 @@ func (manager Manager) registerCaveman(root string, projectConfig *config.Config
 	// at a guessable name before the `rm -rf` + git clone runs).
 	clone := `cloneDir=$(mktemp -d "${TMPDIR:-/tmp}/stackgenie-caveman-src.XXXXXX") && ` +
 		"git clone --depth 1 https://github.com/JuliusBrussee/caveman \"$cloneDir\""
-	installCmd := "cd \"$cloneDir\" && timeout --kill-after=30s 600s node bin/install.js --non-interactive --with-hooks " +
+	installCmd := "cd \"$cloneDir\" && timeout --kill-after=30s 600s node installer/install.js --non-interactive --with-hooks " +
 		strings.Join(only, " ")
 	mirror := `og="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"; ` +
 		`for pair in "skills:skills" "agents:agents" "commands:prompts"; do ` +

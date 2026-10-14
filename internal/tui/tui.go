@@ -684,7 +684,13 @@ func (application *app) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// session: an INTERACTIVE program, so — exactly like ExecRequestedMsg/
 			// AttachRequestedMsg — the app SUSPENDS and runs it in the user's real
 			// terminal via tea.ExecProcess, restoring the TUI on exit.
-			command := exec.Command(executablePath(), message.Action, message.Project)
+			// Hold the terminal on a failed launch: the TUI repaints the moment the subprocess
+			// exits, which used to wipe its error message before it could be read. Only
+			// the CLI's own failure codes (2-5) pause — a normal agent exit does not.
+			command := exec.Command("sh", "-c",
+				`"$0" "$@"; status=$?; if [ "$status" -ge 2 ] && [ "$status" -le 5 ]; then `+
+					`printf '\n[ai %s exited with status %s] press Enter to return... ' "$1" "$status"; read -r _; fi; exit "$status"`,
+				executablePath(), message.Action, message.Project)
 			return application, tea.ExecProcess(command, func(execErr error) tea.Msg {
 				return sessionFinishedMsg{err: execErr}
 			})

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jt-helsinki/stack-genie/internal/agentcfg"
@@ -69,6 +70,11 @@ func (fake fakeServedModels) ServedModels() ([]agentcfg.Model, error) { return f
 // directory) and writes its config.yaml. Returns the project's root directory.
 func seedProject(test *testing.T, project string, projectConfig *config.Config) string {
 	test.Helper()
+	// The index lives under $HOME: without isolation the project registers in the developer's
+	// REAL ~/.ai-platform (leaking test dirs into `ai list`).
+	if !strings.HasPrefix(os.Getenv("HOME"), os.TempDir()) {
+		test.Setenv("HOME", test.TempDir())
+	}
 	root := filepath.Join(test.TempDir(), project)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		test.Fatal(err)
