@@ -561,6 +561,12 @@ func (manager Manager) teardownCodeReviewGraph(root string) {
 
 // --- codebase-memory-mcp -----------------------------------------------------
 
+// codebaseMemoryClients are the install targets codebase-memory-mcp is asked to configure.
+// codex is deliberately absent: its installer fails on a ~/.codex/config.toml carrying
+// nono's managed block (reproduced with v0.11.0), which aborted the whole install on every
+// launch — and codex gets this server from agentcfg.EnabledMCPServers instead.
+const codebaseMemoryClients = "claude,opencode,gemini,hermes,omp"
+
 // registerCodebaseMemory registers codebase-memory-mcp
 // (https://github.com/DeusData/codebase-memory-mcp) as an MCP server with each
 // installed agent CLI via its auto-detecting `install` (no per-platform flag).
@@ -575,7 +581,7 @@ func (manager Manager) registerCodebaseMemory(root string, projectConfig *config
 	}
 	script := "[ -f " + shQuote(installMarker) + " ] && exit 0; " +
 		"command -v codebase-memory-mcp >/dev/null 2>&1 || exit 0; " +
-		"timeout --kill-after=15s 45s codebase-memory-mcp install && touch " + shQuote(installMarker)
+		"timeout --kill-after=15s 45s codebase-memory-mcp install --clients=" + codebaseMemoryClients + " && touch " + shQuote(installMarker)
 	if err := runBlockingScript(root, script, codebaseMemoryInstallTimeout); err != nil {
 		warnf("codebase-memory-mcp registration could not complete (will retry next launch): %v", err)
 	}
