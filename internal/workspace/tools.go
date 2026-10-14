@@ -210,8 +210,18 @@ func runBlockingScript(root, script string, timeout time.Duration) error {
 // ponytail, agent-skills) write into it and need the per-CLI symlinks to
 // already exist for those files to reach opencode/claude-code/omp/gemini.
 func (manager Manager) registerAITools(root string, projectConfig *config.Config) {
+	manager.registerAIToolsReporting(root, projectConfig, nil)
+}
+
+// registerAIToolsReporting is registerAITools with a progress callback: report (nil-safe) is
+// told which enabled tool is being installed, so a creation that blocks on slow steps shows
+// the user it is working.
+func (manager Manager) registerAIToolsReporting(root string, projectConfig *config.Config, report func(string)) {
 	if projectConfig == nil {
 		return
+	}
+	if report == nil {
+		report = func(string) {}
 	}
 	if err := os.MkdirAll(toolPool(root), 0o755); err != nil {
 		warnf("could not create .ai-platform: %v", err)
@@ -220,16 +230,30 @@ func (manager Manager) registerAITools(root string, projectConfig *config.Config
 	if err := linkSharedResources(root, projectConfig.Agent.Tools); err != nil {
 		warnf("could not link shared agent resources: %v", err)
 	}
-	manager.registerGraphify(root, projectConfig)
-	manager.registerCaveman(root, projectConfig)
-	manager.registerCodeReviewGraph(root, projectConfig)
-	manager.registerCodebaseMemory(root, projectConfig)
-	manager.registerOpenViking(root, projectConfig)
-	manager.registerTokenSave(root, projectConfig)
-	manager.registerAgentMemory(root, projectConfig)
-	manager.registerPonytail(root, projectConfig)
-	manager.registerAgentSkills(root, projectConfig)
-	manager.registerSerena(root, projectConfig)
+	steps := []struct {
+		tool     string
+		register func(string, *config.Config)
+	}{
+		{"graphify", manager.registerGraphify},
+		{"caveman", manager.registerCaveman},
+		{"code-review-graph", manager.registerCodeReviewGraph},
+		{"codebase-memory-mcp", manager.registerCodebaseMemory},
+		{"openviking", manager.registerOpenViking},
+		{"tokensave", manager.registerTokenSave},
+		{"agentmemory", manager.registerAgentMemory},
+		{"ponytail", manager.registerPonytail},
+		{"agent-skills", manager.registerAgentSkills},
+		{"serena", manager.registerSerena},
+	}
+	for _, step := range steps {
+		// Announce only a step that has work to do — an installed tool's marker makes it a
+		// no-op, and repeating every tool on every launch would be noise.
+		marker := filepath.Join(toolPool(root), "."+strings.TrimSuffix(step.tool, "-mcp")+"-installed")
+		if _, statErr := os.Stat(marker); statErr != nil && projectConfig.Context.ToolEnabled(step.tool) {
+			report("setting up " + step.tool)
+		}
+		step.register(root, projectConfig)
+	}
 }
 
 // --- Graphify -----------------------------------------------------------

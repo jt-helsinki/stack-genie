@@ -76,7 +76,7 @@ func Execute(spec project.Spec, now string, report func(Progress)) (Result, []st
 	// Install the selected AI tools now, at creation, rather than on first launch (slow steps
 	// run detached; logs land in <project>/.ai-platform/run).
 	report(Progress{Step: "installing AI tools"})
-	if err := prepareWorkspace(spec.Root); err != nil {
+	if err := prepareWorkspace(spec.Root, func(step string) { report(Progress{Step: step}) }); err != nil {
 		return Result{}, nil, output.Errorf(output.ExitRuntimeFailure, "set up workspace tools: %s", err)
 	}
 	configYAML, err := os.ReadFile(config.ProjectPath(spec.Root))

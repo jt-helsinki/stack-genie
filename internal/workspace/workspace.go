@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/jt-helsinki/stack-genie/internal/nono"
 	"github.com/jt-helsinki/stack-genie/internal/runtime"
 	"github.com/jt-helsinki/stack-genie/internal/state"
+	"github.com/jt-helsinki/stack-genie/internal/ui"
 )
 
 // Errors returned by Manager methods (exit-code mapping lives in internal/cli).
@@ -73,6 +75,16 @@ type Manager struct {
 	Served      ServedModels
 	Credentials CredentialStore
 	Now         func() string
+	// Progress, when set, is told each launch step as it starts. A first launch can spend a
+	// minute in tool installs and the profile pack pull; without it the terminal sits blank.
+	Progress func(string)
+}
+
+// progress reports one launch step (nil-safe).
+func (manager Manager) progress(step string) {
+	if manager.Progress != nil {
+		manager.Progress(step)
+	}
 }
 
 // RealManager builds a production Manager: the real nono CLI, a real LiteLLM
@@ -87,6 +99,9 @@ func RealManager(now func() string) Manager {
 		Served:      servedModelsClient{manager: keyManager},
 		Credentials: realCredentialStore{},
 		Now:         now,
+		Progress: func(step string) {
+			_, _ = fmt.Fprintln(os.Stderr, ui.Muted.Render("→ "+step))
+		},
 	}
 }
 
@@ -220,11 +235,13 @@ func (manager Manager) Agent(project, cli string) (*state.Workspace, error) {
 
 	var envCredentialMap map[string]string
 	if !oauthMode {
+		manager.progress("minting a scoped gateway key")
 		key, err := manager.ensureScopedKey(project)
 		if err != nil {
 			return nil, err
 		}
 		envCredentialMap = map[string]string{credentialName(project): spec.credentialEnvVar}
+		manager.progress("writing " + cli + " configuration")
 		if err := manager.writeAgentConfig(root, cli, projectConfig, gatewayURL, key); err != nil {
 			return nil, err
 		}
@@ -232,8 +249,9 @@ func (manager Manager) Agent(project, cli string) (*state.Workspace, error) {
 		return nil, err
 	}
 
-	manager.registerAITools(root, projectConfig)
+	manager.registerAIToolsReporting(root, projectConfig, manager.progress)
 
+	manager.progress("preparing the sandbox profile")
 	profilePath, err := ensureProfile(root, cli, projectConfig, gatewayURL)
 	if err != nil {
 		return nil, err
@@ -245,6 +263,7 @@ func (manager Manager) Agent(project, cli string) (*state.Workspace, error) {
 	// already get compression from LiteLLM's headroom guardrail.
 	launch := []string{spec.binary}
 
+	manager.progress("starting " + cli + " in the nono sandbox")
 	sessionID, err := manager.Runner.RunDetached(context.Background(), nono.RunOptions{
 		Profile:          profilePath,
 		Name:             cli,
@@ -301,7 +320,8 @@ func (manager Manager) Shell(project string) error {
 	if err != nil {
 		return err
 	}
-	manager.registerAITools(root, projectConfig)
+	manager.registerAIToolsReporting(root, projectConfig, manager.progress)
+	manager.progress("preparing the sandbox profile")
 	profilePath, err := ensureProfile(root, "", projectConfig, "")
 	if err != nil {
 		return err
@@ -393,11 +413,11 @@ func (manager Manager) DeleteCredentials(project string) error {
 // `ai create` calls it so a workspace is fully set up the moment it exists; every Agent/Shell
 // launch runs the same steps again (each is marker-guarded, so that is cheap) to pick up
 // `ai tools enable|disable` changes.
-func PrepareProject(root string) error {
+func PrepareProject(root string, report func(string)) error {
 	projectConfig, err := config.Load(root)
 	if err != nil {
 		return err
 	}
-	Manager{}.registerAITools(root, projectConfig)
+	Manager{}.registerAIToolsReporting(root, projectConfig, report)
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -243,6 +244,37 @@ func TestShellUsesProjectConfiguredShell(test *testing.T) {
 	}
 	if len(runner.ShellCalls) != 1 || len(runner.ShellCalls[0].Command) != 1 || runner.ShellCalls[0].Command[0] != "zsh" {
 		test.Fatalf("Shell command = %+v, want [zsh]", runner.ShellCalls)
+	}
+}
+
+// A first launch can spend a long time in tool installs; each step must be announced so the
+// terminal is never blank — but an already-installed tool (its marker exists) is silent.
+func TestShellReportsLaunchProgress(test *testing.T) {
+	test.Setenv("HOME", test.TempDir())
+	enabled := true
+	root := seedProject(test, "demo", &config.Config{
+		Agent:   config.AgentConfig{Tools: []string{"opencode"}, DefaultTool: "opencode"},
+		Context: config.ContextConfig{CavemanEnabled: &enabled},
+	})
+	// Marker present: registerCaveman exits immediately, so no real installer runs.
+	if err := os.MkdirAll(toolPool(root), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(toolPool(root), ".caveman-installed"), nil, 0o644); err != nil {
+		test.Fatal(err)
+	}
+	manager := testManager(&nono.FakeRunner{}, &fakeKeyMinter{}, newFakeCredentialStore())
+	var steps []string
+	manager.Progress = func(step string) { steps = append(steps, step) }
+
+	if err := manager.Shell("demo"); err != nil {
+		test.Fatalf("Shell: %v", err)
+	}
+	if !slices.Contains(steps, "preparing the sandbox profile") {
+		test.Fatalf("progress steps = %v", steps)
+	}
+	if slices.Contains(steps, "setting up caveman") {
+		test.Fatalf("an installed tool was announced: %v", steps)
 	}
 }
 

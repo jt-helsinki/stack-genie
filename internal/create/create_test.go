@@ -16,23 +16,31 @@ import (
 
 // Real tool installers (git clones, uv/npm installs) must never run from unit tests.
 func TestMain(main *testing.M) {
-	prepareWorkspace = func(string) error { return nil }
+	prepareWorkspace = func(string, func(string)) error { return nil }
 	os.Exit(main.Run())
 }
 
 func TestExecuteInstallsToolsAtCreation(test *testing.T) {
 	test.Setenv("HOME", test.TempDir())
 	var prepared string
-	prepareWorkspace = func(root string) error { prepared = root; return nil }
-	test.Cleanup(func() { prepareWorkspace = func(string) error { return nil } })
+	prepareWorkspace = func(root string, report func(string)) error {
+		prepared = root
+		report("setting up caveman")
+		return nil
+	}
+	test.Cleanup(func() { prepareWorkspace = func(string, func(string)) error { return nil } })
 
 	root := filepath.Join(test.TempDir(), "location")
 	spec := project.Spec{Name: "tools-app", AgentCLIs: []string{"opencode"}, DefaultTool: "opencode", Root: root}
-	if _, _, err := Execute(spec, "2026-07-05T00:00:00Z", nil); err != nil {
+	var steps []string
+	if _, _, err := Execute(spec, "2026-07-05T00:00:00Z", func(progress Progress) { steps = append(steps, progress.Step) }); err != nil {
 		test.Fatalf("Execute: %v", err)
 	}
 	if prepared != root {
 		test.Fatalf("tool install ran for %q, want %q", prepared, root)
+	}
+	if !slices.Contains(steps, "setting up caveman") {
+		test.Fatalf("per-tool progress was not forwarded: %v", steps)
 	}
 }
 
