@@ -158,6 +158,27 @@ func TestEnsureProfileOpensLoopbackGatewayPort(test *testing.T) {
 	}
 }
 
+// opencode gets a per-project database so a shared, incompatible ~/.local/share/opencode
+// database cannot blank its screen.
+func TestEnsureProfileGivesOpencodeAProjectDatabase(test *testing.T) {
+	root := test.TempDir()
+	path, err := ensureProfile(root, "opencode", &config.Config{}, "http://127.0.0.1:18787/v1")
+	if err != nil {
+		test.Fatal(err)
+	}
+	want := filepath.Join(root, ".ai-platform", "opencode.db")
+	if got := readProfile(test, path).Environment.SetVars["OPENCODE_DB"]; got != want {
+		test.Fatalf("OPENCODE_DB = %q, want %q", got, want)
+	}
+	other, err := ensureProfile(root, "codex", &config.Config{}, "http://127.0.0.1:18787/v1")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if _, set := readProfile(test, other).Environment.SetVars["OPENCODE_DB"]; set {
+		test.Fatal("OPENCODE_DB must only be set for opencode")
+	}
+}
+
 // TestEnsureProfileGeminiSetsBaseURLEnvVar verifies gemini — which has no
 // config-file base-URL setting — gets the gateway ROOT (no /v1 suffix) as a
 // non-secret profile environment variable; every other CLI gets no such var.
@@ -176,8 +197,8 @@ func TestEnsureProfileGeminiSetsBaseURLEnvVar(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if opencode := readProfile(test, opencodePath); len(opencode.Environment.SetVars) != 0 {
-		test.Errorf("opencode profile should carry no set_vars, got %v", opencode.Environment.SetVars)
+	if opencode := readProfile(test, opencodePath); opencode.Environment.SetVars[agentcfg.GeminiBaseURLEnvVar] != "" {
+		test.Errorf("opencode profile should carry no gemini base URL var, got %v", opencode.Environment.SetVars)
 	}
 }
 

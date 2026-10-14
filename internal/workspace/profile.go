@@ -79,6 +79,14 @@ func ensureProfile(root, cli string, projectConfig *config.Config, gatewayURL st
 		profile.Environment.SetVars = map[string]string{agentcfg.GeminiBaseURLEnvVar: gatewayRoot}
 	}
 
+	if cli == "opencode" {
+		// opencode keeps ONE shared database under ~/.local/share/opencode. When that file was
+		// written by a different opencode build ("Database is not empty and has no session
+		// table") opencode fails on start and the session shows a blank screen with no error.
+		// A per-project database avoids the shared file; OPENCODE_DB is opencode's own override.
+		profile.Environment.SetVars = map[string]string{"OPENCODE_DB": filepath.Join(root, ".ai-platform", "opencode.db")}
+	}
+
 	path := filepath.Join(root, ".ai-platform", "nono-profile-"+profileKey+".json")
 	if err := nono.WriteProfile(path, profile); err != nil {
 		return "", err

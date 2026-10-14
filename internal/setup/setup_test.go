@@ -1611,6 +1611,10 @@ func TestEnsureHeadroomIsInternalOnly(test *testing.T) {
 	if !strings.Contains(launch, "HEADROOM_TELEMETRY=off") {
 		test.Errorf("headroom run missing HEADROOM_TELEMETRY=off: %s", launch)
 	}
+	// The image defaults to 127.0.0.1, unreachable from LiteLLM's container.
+	if !strings.Contains(launch, "HEADROOM_HOST=0.0.0.0") || !strings.Contains(launch, "HEADROOM_ALLOW_UNAUTHENTICATED_BIND=1") {
+		test.Errorf("headroom must listen on all interfaces and acknowledge the open bind: %s", launch)
+	}
 }
 
 // --- TASK B: live service log capture --------------------------------------

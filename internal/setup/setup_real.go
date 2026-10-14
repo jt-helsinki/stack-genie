@@ -676,6 +676,25 @@ func ensureRedisInsight(prober runtime.Prober, containerRuntime string) error {
 	return nil
 }
 
+// headroomListenEnv makes Headroom bind 0.0.0.0 so LiteLLM can reach aip-headroom:8787, and
+// headroomAllowOpenBindEnv acknowledges the open bind (Headroom refuses a non-loopback bind
+// without a token otherwise). That is acceptable here: the container is INTERNAL-ONLY on aip-net
+// (never published to the host) and holds no upstream credentials — LiteLLM only calls its
+// /v1/compress. Any other container on aip-net can reach it, which is the accepted tradeoff.
+const (
+	headroomListenEnv        = "HEADROOM_HOST=0.0.0.0"
+	headroomAllowOpenBindEnv = "HEADROOM_ALLOW_UNAUTHENTICATED_BIND=1"
+)
+
+// containerHasEnv reports whether the container was created with the exact env entry.
+func containerHasEnv(prober runtime.Prober, containerRuntime, name, entry string) bool {
+	out, err := prober.Run(containerRuntime, "inspect", "--format", "{{json .Config.Env}}", name)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), `"`+entry+`"`)
+}
+
 // ensureHeadroom runs the Headroom input-compression SERVICE. Headroom is no longer
 // a proxy in front of LiteLLM — it is a LiteLLM pre_call GUARDRAIL: LiteLLM POSTs
 // requests to aip-headroom:8787/v1/compress in-process (see litellm.buildGuardrails).
@@ -690,7 +709,8 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 	// case (self-heal, so a plain `ai setup` migrates it instead of failing when the
 	// proxy can't bind); a stale image likewise forces a recreate.
 	if containerOnCurrentImage(prober, containerRuntime, headroomContainer, containerImage("headroom")) &&
-		!containerPublishesHostPort(prober, containerRuntime, headroomContainer) {
+		!containerPublishesHostPort(prober, containerRuntime, headroomContainer) &&
+		containerHasEnv(prober, containerRuntime, headroomContainer, headroomAllowOpenBindEnv) {
 		return nil
 	}
 	_, _ = prober.Run(containerRuntime, "rm", "-f", headroomContainer)
@@ -699,6 +719,10 @@ func ensureHeadroom(prober runtime.Prober, containerRuntime string) error {
 		"--network", platformNetwork,
 		// Disable Headroom's usage telemetry — this is an internal, offline service.
 		"-e", "HEADROOM_TELEMETRY=off",
+		// Listen on all interfaces: the image defaults to HEADROOM_HOST=127.0.0.1, which is
+		// unreachable from LiteLLM's container ("Headroom compression service unreachable").
+		"-e", headroomListenEnv,
+		"-e", headroomAllowOpenBindEnv,
 		containerImage("headroom"),
 	}
 	if _, err := prober.Run(containerRuntime, args...); err != nil {

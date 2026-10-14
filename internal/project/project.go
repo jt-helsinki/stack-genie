@@ -330,7 +330,7 @@ func Scaffold(spec Spec, createdAt string) (string, error) {
 	}
 
 	// .gitignore — ignore the host-local run/ directory.
-	if err := os.WriteFile(filepath.Join(root, ".ai-platform", ".gitignore"), []byte("run/\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".ai-platform", ".gitignore"), []byte("run/\nopencode.db*\n"), 0o644); err != nil {
 		return "", err
 	}
 
