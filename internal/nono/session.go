@@ -102,8 +102,14 @@ type RealRunner struct{}
 
 var startedSessionPrefix = "Started detached session "
 
+// detachStartupTimeoutSeconds is how long nono may wait for a detached session to become attachable.
+const detachStartupTimeoutSeconds = "180"
+
 func (RealRunner) RunDetached(ctx context.Context, opts RunOptions) (string, error) {
-	args := []string{"run", "--detached"}
+	// nono waits for the session's first terminal output before it reports success, 30s by
+	// default. A cold first start (an agent installing its plugins/caches) can exceed that
+	// and fail with "failed to become attachable", so allow far longer.
+	args := []string{"run", "--detached", "--detach-timeout", detachStartupTimeoutSeconds}
 	args = append(args, runOptionFlags(opts)...)
 	if len(opts.Command) > 0 {
 		args = append(args, "--")

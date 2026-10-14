@@ -294,6 +294,7 @@ func TestCreateCancelledClosesOverlay(test *testing.T) {
 }
 
 func TestCreateConfirmedClosesOverlayAndRunsCreate(test *testing.T) {
+	test.Setenv("HOME", test.TempDir()) // the create command registers the project under $HOME
 	application := &app{cwd: test.TempDir(), projectsIndex: 0, views: []View{&fakeView{title: "Projects"}}}
 	application.createView = views.NewCreate(application.cwd, nil)
 

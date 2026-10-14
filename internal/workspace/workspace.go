@@ -263,7 +263,7 @@ func (manager Manager) Agent(project, cli string) (*state.Workspace, error) {
 	// already get compression from LiteLLM's headroom guardrail.
 	launch := []string{spec.binary}
 
-	manager.progress("starting " + cli + " in the nono sandbox")
+	manager.progress("starting " + cli + " in the nono sandbox (a first start can take a minute while it sets itself up)")
 	sessionID, err := manager.Runner.RunDetached(context.Background(), nono.RunOptions{
 		Profile:          profilePath,
 		Name:             cli,
