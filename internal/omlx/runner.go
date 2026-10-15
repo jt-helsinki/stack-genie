@@ -75,6 +75,9 @@ func (RealRunner) Start(modelDir string, port int) (ServerHandle, error) {
 		"--paged-ssd-cache-dir", pagedSSDCacheDir,
 	)
 	command.Env = append(os.Environ(), "OMLX_BASE_PATH="+basePath)
+	// A fixed cwd: omlx's import chain resolves a relative path at import time, which
+	// crashes the server when the caller's cwd was deleted (e.g. a removed workspace).
+	command.Dir = basePath
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Stdout = logFile
 	command.Stderr = logFile
