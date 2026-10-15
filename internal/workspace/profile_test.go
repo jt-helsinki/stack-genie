@@ -103,6 +103,19 @@ func TestEnsureProfileNetworkCapabilitiesMirrorConfig(test *testing.T) {
 	}
 }
 
+// TestEnsureProfilePublicModeHasNoAllowlist: nono treats any allow_domain as a proxy
+// allowlist that blocks all other hosts, so a public profile must not carry one.
+func TestEnsureProfilePublicModeHasNoAllowlist(test *testing.T) {
+	projectConfig := &config.Config{Network: config.NetworkConfig{Egress: "public", AllowDomain: []string{"api.anthropic.com"}}}
+	path, err := ensureProfile(test.TempDir(), "opencode", projectConfig, "http://127.0.0.1:18787/v1")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if got := readProfile(test, path).Network.AllowDomain; len(got) != 0 {
+		test.Errorf("public profile AllowDomain = %v, want empty", got)
+	}
+}
+
 // TestEnsureProfileDenyModeStillAllowsGateway verifies a `deny` egress policy
 // never cuts the agent off from its own model gateway — only the open
 // internet is meant to be fenced off (regression for a bug where `ai network

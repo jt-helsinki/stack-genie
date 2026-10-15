@@ -55,21 +55,25 @@ func ensureProfile(root, cli string, projectConfig *config.Config, gatewayURL st
 		profileKey = "shell"
 	}
 
-	allowDomain := projectConfig.Network.AllowDomain
-	// The model gateway must stay reachable regardless of the project's own
-	// egress policy — a `deny` profile is meant to fence off the INTERNET, not
-	// the agent's own LiteLLM gateway, which every agent CLI needs for every
-	// request. Without this, `ai network egress deny` silently breaks the
-	// agent it's supposed to just sandbox.
-	if gatewayHost := gatewayHostFromURL(gatewayURL); gatewayHost != "" && !containsString(allowDomain, gatewayHost) {
-		allowDomain = append(append([]string{}, allowDomain...), gatewayHost)
+	blockNet := projectConfig.Network.ResolvedEgress() == "deny"
+	// nono turns ANY allow_domain entry into a proxy allowlist that blocks every other host,
+	// so a public workspace must carry none — otherwise the gateway entry below (or a
+	// pre-seeded oauth provider domain) silently cuts it off from the internet.
+	var allowDomain []string
+	if blockNet {
+		allowDomain = projectConfig.Network.AllowDomain
+		// The model gateway must stay reachable under `deny` — that policy fences off the
+		// INTERNET, not the agent's own LiteLLM gateway, which every request needs.
+		if gatewayHost := gatewayHostFromURL(gatewayURL); gatewayHost != "" && !containsString(allowDomain, gatewayHost) {
+			allowDomain = append(append([]string{}, allowDomain...), gatewayHost)
+		}
 	}
 
 	profile := nono.Profile{
 		Meta:    nono.Meta{Name: Name(filepath.Base(root)) + "-" + profileKey},
 		Extends: base,
 		Network: nono.NetworkCapabilities{
-			Block:       projectConfig.Network.ResolvedEgress() == "deny",
+			Block:       blockNet,
 			AllowDomain: allowDomain,
 			DenyDomain:  projectConfig.Network.DenyDomain,
 			OpenPort:    loopbackGatewayPorts(gatewayURL),
