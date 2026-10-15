@@ -1,7 +1,9 @@
 package workspace
 
 import (
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -85,7 +87,43 @@ func (manager Manager) writeOpenCodeConfig(root string, projectConfig *config.Co
 	if err != nil {
 		return err
 	}
+	if projectConfig.Context.CodebaseMemoryEnabledOrDefault() {
+		if merged, err = withCodebaseMemoryMCP(merged); err != nil {
+			return err
+		}
+	}
 	return writeFileAtomic(path, merged)
+}
+
+// codebaseMemoryMCPTimeoutMS: codebase-memory-mcp answers `initialize` only after starting its
+// daemon (about 8s measured), and opencode gives an MCP server 5s by default, so it reported
+// "failed" even outside the sandbox.
+const codebaseMemoryMCPTimeoutMS = 60000
+
+// withCodebaseMemoryMCP adds a complete mcp entry for codebase-memory-mcp with a longer
+// startup timeout (opencode rejects a partial entry that only sets the timeout). A binary
+// that is not installed leaves the config untouched.
+func withCodebaseMemoryMCP(config []byte) ([]byte, error) {
+	binary, err := exec.LookPath("codebase-memory-mcp")
+	if err != nil {
+		return config, nil
+	}
+	var document map[string]any
+	if err := json.Unmarshal(config, &document); err != nil {
+		return nil, err
+	}
+	servers, _ := document["mcp"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+	}
+	servers["codebase-memory-mcp"] = map[string]any{
+		"type":    "local",
+		"command": []string{binary},
+		"enabled": true,
+		"timeout": codebaseMemoryMCPTimeoutMS,
+	}
+	document["mcp"] = servers
+	return json.MarshalIndent(document, "", "  ")
 }
 
 func writeClaudeConfig(root, gatewayURL string, apiKeyMode bool) error {

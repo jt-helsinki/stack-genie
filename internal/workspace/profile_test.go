@@ -179,6 +179,37 @@ func TestEnsureProfileGivesOpencodeAProjectDatabase(test *testing.T) {
 	}
 }
 
+// codebase-memory-mcp's daemon needs a unix socket and a cache/runtime dir whose ancestors the
+// sandbox lets it stat, so the profile grants the socket dir and points both env vars at it.
+func TestEnsureProfileSupportsCodebaseMemoryDaemon(test *testing.T) {
+	test.Setenv("TMPDIR", test.TempDir())
+	enabled := true
+	projectConfig := &config.Config{Context: config.ContextConfig{CodebaseMemoryEnabled: &enabled}}
+	path, err := ensureProfile(test.TempDir(), "opencode", projectConfig, "http://127.0.0.1:18787/v1")
+	if err != nil {
+		test.Fatal(err)
+	}
+	profile := readProfile(test, path)
+	runtimeDir := profile.Environment.SetVars["CBM_RUNTIME_DIR"]
+	if runtimeDir == "" || profile.Environment.SetVars["CBM_CACHE_DIR"] == "" {
+		test.Fatalf("CBM env not set: %v", profile.Environment.SetVars)
+	}
+	if got := profile.Filesystem.UnixSocketSubtreeBind; len(got) != 1 || got[0] != runtimeDir {
+		test.Fatalf("unix socket grant = %v, want [%s]", got, runtimeDir)
+	}
+	if profile.Environment.SetVars["OPENCODE_DB"] == "" {
+		test.Fatal("setting the CBM vars must not drop OPENCODE_DB")
+	}
+	disabled := false
+	off, err := ensureProfile(test.TempDir(), "opencode", &config.Config{Context: config.ContextConfig{CodebaseMemoryEnabled: &disabled}}, "http://127.0.0.1:18787/v1")
+	if err != nil {
+		test.Fatal(err)
+	}
+	if _, set := readProfile(test, off).Environment.SetVars["CBM_RUNTIME_DIR"]; set {
+		test.Fatal("CBM env must only be set when the tool is enabled")
+	}
+}
+
 // TestEnsureProfileGeminiSetsBaseURLEnvVar verifies gemini — which has no
 // config-file base-URL setting — gets the gateway ROOT (no /v1 suffix) as a
 // non-secret profile environment variable; every other CLI gets no such var.

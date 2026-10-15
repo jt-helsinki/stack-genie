@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,5 +188,39 @@ func TestAppendCodexTrustPreservesOtherProjects(test *testing.T) {
 	text := string(raw)
 	if !strings.Contains(text, agentcfg.CodexTrustMarker(first)) || !strings.Contains(text, agentcfg.CodexTrustMarker(second)) {
 		test.Fatalf("both projects' trust entries should be present:\n%s", text)
+	}
+}
+
+// opencode only waits 5s for an MCP server and codebase-memory-mcp needs ~8s to answer
+// `initialize`, so its entry must carry a longer timeout (and be complete, or opencode rejects it).
+func TestWithCodebaseMemoryMCPAddsCompleteEntryWithTimeout(test *testing.T) {
+	binDir := test.TempDir()
+	binary := filepath.Join(binDir, "codebase-memory-mcp")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		test.Fatal(err)
+	}
+	test.Setenv("PATH", binDir)
+	out, err := withCodebaseMemoryMCP([]byte(`{"theme":"x"}`))
+	if err != nil {
+		test.Fatal(err)
+	}
+	var decoded struct {
+		Theme string `json:"theme"`
+		MCP   map[string]struct {
+			Type    string   `json:"type"`
+			Command []string `json:"command"`
+			Timeout int      `json:"timeout"`
+		} `json:"mcp"`
+	}
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		test.Fatal(err)
+	}
+	entry := decoded.MCP["codebase-memory-mcp"]
+	if decoded.Theme != "x" || entry.Type != "local" || len(entry.Command) != 1 || entry.Command[0] != binary || entry.Timeout != codebaseMemoryMCPTimeoutMS {
+		test.Fatalf("entry = %+v theme=%q", entry, decoded.Theme)
+	}
+	test.Setenv("PATH", test.TempDir())
+	if untouched, _ := withCodebaseMemoryMCP([]byte(`{"a":1}`)); string(untouched) != `{"a":1}` {
+		test.Fatalf("a missing binary must leave the config untouched: %s", untouched)
 	}
 }

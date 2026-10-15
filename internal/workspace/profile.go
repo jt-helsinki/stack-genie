@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -74,9 +75,17 @@ func ensureProfile(root, cli string, projectConfig *config.Config, gatewayURL st
 			OpenPort:    loopbackGatewayPorts(gatewayURL),
 		},
 	}
+	if projectConfig.Context.CodebaseMemoryEnabledOrDefault() {
+		cacheDir, runtimeDir, err := ensureCodebaseMemoryDirs()
+		if err != nil {
+			return "", err
+		}
+		profile.Filesystem.UnixSocketSubtreeBind = []string{runtimeDir}
+		profile.Environment.SetVars = map[string]string{"CBM_CACHE_DIR": cacheDir, "CBM_RUNTIME_DIR": runtimeDir}
+	}
 	if cli == "gemini" {
 		gatewayRoot := strings.TrimSuffix(strings.TrimRight(gatewayURL, "/"), "/v1")
-		profile.Environment.SetVars = map[string]string{agentcfg.GeminiBaseURLEnvVar: gatewayRoot}
+		setProfileVar(&profile, agentcfg.GeminiBaseURLEnvVar, gatewayRoot)
 	}
 
 	if cli == "opencode" {
@@ -84,7 +93,7 @@ func ensureProfile(root, cli string, projectConfig *config.Config, gatewayURL st
 		// written by a different opencode build ("Database is not empty and has no session
 		// table") opencode fails on start and the session shows a blank screen with no error.
 		// A per-project database avoids the shared file; OPENCODE_DB is opencode's own override.
-		profile.Environment.SetVars = map[string]string{"OPENCODE_DB": filepath.Join(root, ".ai-platform", "opencode.db")}
+		setProfileVar(&profile, "OPENCODE_DB", filepath.Join(root, ".ai-platform", "opencode.db"))
 	}
 
 	path := filepath.Join(root, ".ai-platform", "nono-profile-"+profileKey+".json")
@@ -131,6 +140,29 @@ func loopbackGatewayPorts(gatewayURL string) []int {
 		return nil
 	}
 	return []int{port}
+}
+
+func setProfileVar(profile *nono.Profile, name, value string) {
+	if profile.Environment.SetVars == nil {
+		profile.Environment.SetVars = map[string]string{}
+	}
+	profile.Environment.SetVars[name] = value
+}
+
+// ensureCodebaseMemoryDirs creates the cache and runtime directories codebase-memory-mcp uses
+// inside the sandbox. They live under the temp dir, and with short names, for two reasons seen
+// live: the binary refuses a cache whose ancestors it cannot stat (everything under /Users is
+// blocked in the sandbox), and its daemon socket path must stay under the unix-socket length
+// limit (a 7-char base under macOS's ~49-char TMPDIR failed, 'cb/r' works). The index therefore lasts only as long as the temp dir; it is rebuilt on demand.
+func ensureCodebaseMemoryDirs() (cacheDir, runtimeDir string, err error) {
+	base := filepath.Join(os.TempDir(), "cb")
+	cacheDir, runtimeDir = filepath.Join(base, "c"), filepath.Join(base, "r")
+	for _, dir := range []string{cacheDir, runtimeDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", "", err
+		}
+	}
+	return cacheDir, runtimeDir, nil
 }
 
 func containsString(items []string, want string) bool {

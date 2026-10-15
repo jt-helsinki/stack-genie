@@ -79,6 +79,9 @@ type FilesystemCapabilities struct {
 	Allow []string `json:"allow,omitempty"`
 	Read  []string `json:"read,omitempty"`
 	Write []string `json:"write,omitempty"`
+	// UnixSocketSubtreeBind allows connect+bind of AF_UNIX sockets anywhere under these
+	// directories. nono denies pathname unix sockets by default.
+	UnixSocketSubtreeBind []string `json:"unix_socket_subtree_bind,omitempty"`
 }
 
 // NetworkCapabilities controls egress. Block denies all network access
